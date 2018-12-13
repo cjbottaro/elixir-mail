@@ -9,7 +9,7 @@ defmodule Mail.Parsers.RFC2822 do
       %Mail.Message{body: "Some message", headers: %{to: ["user@example.com"], from: "other@example.com", subject: "Read this!"}}
   """
 
-  @months ~w(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)
+  @months ~w(JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC)
 
   def parse(content)
   def parse([_ | _] = lines) do
@@ -30,8 +30,13 @@ defmodule Mail.Parsers.RFC2822 do
     do: extract_headers(tail, [previous_header <> folded_body | headers])
   defp extract_headers([<<"\t" <> _>> = folded_body | tail], [previous_header | headers]),
     do: extract_headers(tail, [previous_header <> folded_body | headers])
-  defp extract_headers([header | tail], headers),
-    do: extract_headers(tail, [header | headers])
+  defp extract_headers([header | tail], headers) do
+    if String.contains?(header, ":") do
+      extract_headers(tail, [header | headers])
+    else
+      [Enum.reverse(headers), [header | tail]]
+    end
+  end
 
   @doc """
   Parses a RFC2822 timestamp to an Erlang timestamp
@@ -70,7 +75,7 @@ defmodule Mail.Parsers.RFC2822 do
                          _timezone :: binary-size(5),
                          _rest :: binary>>) do
     year  = year  |> String.to_integer
-    month = Enum.find_index(@months, &(&1 == month)) + 1
+    month = Enum.find_index(@months, &(&1 == String.upcase(month))) + 1
     date  = date  |> String.to_integer
 
     hour   = hour   |> String.to_integer
@@ -99,6 +104,9 @@ defmodule Mail.Parsers.RFC2822 do
                          _rest :: binary>>) do
     erl_from_timestamp(date <> " " <> month <> " " <> year <> " " <> hour <> ":" <> minute <> ":" <> second <> " (" <> timezone <> ")")
   end
+
+  # We tried, we failed
+  def erl_from_timestamp(_), do: nil
 
   defp parse_headers(message, []), do: message
   defp parse_headers(message, [header | tail]) do
@@ -147,8 +155,13 @@ defmodule Mail.Parsers.RFC2822 do
     do: value
 
   defp parse_structured_header_value(value) do
-    case String.split(value, ~r/;\s*/) do
-      [value | []] -> value
+    values =
+      value
+      |> String.split(~r/;\s*/)
+      |> Enum.reject(& &1 == "")
+
+    case values do
+      [value] -> value
       [value | subtypes] -> [value | parse_header_subtypes(subtypes)]
     end
   end
@@ -162,8 +175,16 @@ defmodule Mail.Parsers.RFC2822 do
   end
 
   defp parse_received_value(value) do
-    [value | [date]] = String.split(value, ~r/;\s*/)
-    [value | [{"date", erl_from_timestamp(date)}]]
+    values = String.split(value, ~r/;\s*/)
+    {date, values} = List.pop_at(values, -1)
+
+    case erl_from_timestamp(date) do
+      nil -> value
+      date ->
+        value = Enum.join(values, "; ")
+        date = {"date", date}
+        [value, date]
+    end
   end
 
   defp parse_header_subtypes([]), do: []
